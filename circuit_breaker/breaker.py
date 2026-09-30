@@ -144,7 +144,7 @@ class CircuitBreaker:
             return None
         state = self._states.setdefault(m.symbol, _SymbolState())
         if m.timestamp <= state.last_tox_ts:
-            return None  # /ws/v1/toxicity re-sends the whole cache every second
+            return None  # already seen: a symbol can repeat on the stream without being recomputed
         state.last_tox_ts = m.timestamp
         previous = state.effective
 

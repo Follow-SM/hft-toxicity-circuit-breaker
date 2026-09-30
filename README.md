@@ -51,7 +51,7 @@ The effective action for each symbol is the **more severe** of two legs.
 - **Percentile, not raw VPIN.** Raw VPIN depends on each pair's trade-size distribution, so it can't share one threshold across symbols. FollowSM publishes `vpin_percentile`, which ranks VPIN against the symbol's own recent history, and the breaker trips on that. While a symbol is warming up and no percentile exists yet, it falls back to raw `VPIN_TRIP` / `VPIN_REARM`.
 - **Hysteresis.** A tripped symbol re-arms only when `vpin_percentile < VPIN_PERCENTILE_REARM` (0.80) **and** no trip condition has occurred for `COOLDOWN_SECS`. This prevents flapping between halt and resume around the threshold.
 - **Fail closed.** When a stream disconnects, every symbol it guards is halted immediately. The breaker then reconnects with exponential backoff, and fresh frames re-arm the symbols.
-- **De-duplication.** `/ws/v1/toxicity` re-sends the full cache every second. Frames whose timestamp hasn't advanced are skipped.
+- **De-duplication.** `/ws/v1/toxicity` pushes each symbol as soon as it is recomputed (several times a second when the market is active, at least once a second). Frames whose timestamp hasn't advanced are skipped.
 - **Non-blocking callbacks.** Callbacks run as asyncio tasks with a timeout, so a slow webhook never delays evaluation of the next tick. Callbacks fire only on state **transitions**, never on every tick.
 
 ### Latency

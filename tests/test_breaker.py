@@ -19,7 +19,7 @@ from circuit_breaker.streams import EnterpriseRequiredError, guard_stream
 _ts = iter(range(1, 10_000))
 
 
-def tick(vpin=0.30, ob_tox=1.0, imbalance=0.50, symbol="BTCUSDT", vpin_percentile=None):
+def tick(vpin=0.30, ob_tox=1.0, imbalance=0.50, symbol="BTCUSDT", vpin_percentile=None, ob_pctl=None):
     return SymbolToxicityMetrics(
         symbol=symbol,
         timestamp=float(next(_ts)),
@@ -27,6 +27,7 @@ def tick(vpin=0.30, ob_tox=1.0, imbalance=0.50, symbol="BTCUSDT", vpin_percentil
         vpin=vpin,
         vpin_percentile=vpin_percentile,
         ob_toxicity_1pct=ob_tox,
+        ob_imbalance_percentile=ob_pctl,
         ob_imbalance_l1=0.5,
         depth_bands={"1.0%": {"bid_notional": 1.0, "ask_notional": 1.0, "imbalance_ratio": imbalance}},
         volume_z_score=0.0,
@@ -111,6 +112,23 @@ def test_rearm_waits_for_cooldown():
         clock.now = 5.0
         breaker.on_toxicity(tick(vpin=0.40))
         assert breaker.action("BTCUSDT") == "NONE"
+
+    asyncio.run(scenario())
+
+
+def test_book_leg_uses_imbalance_percentile_tails_when_published():
+    async def scenario():
+        breaker, _, _ = make_breaker()
+        breaker.on_toxicity(tick(ob_tox=2.6, ob_pctl=0.60))  # structurally ask-heavy, normal for this pair
+        assert breaker.action("BTCUSDT") == "NONE"
+        breaker.on_toxicity(tick(ob_tox=0.4, ob_pctl=0.005))  # bid-heavy extreme tail
+        assert breaker.action("BTCUSDT") == "HALT_MAKER_QUOTES"
+
+        warming, _, _ = make_breaker()
+        warming.on_toxicity(tick(ob_tox=2.6))  # no percentile yet: fixed-ratio fallback
+        assert warming.action("BTCUSDT") == "HALT_MAKER_QUOTES"
+        await breaker.drain()
+        await warming.drain()
 
     asyncio.run(scenario())
 

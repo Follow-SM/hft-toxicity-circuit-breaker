@@ -87,7 +87,9 @@ class CircuitBreaker:
 
     Effective action per symbol = the more severe of:
       * toxicity  : HALT while vpin_percentile > vpin_percentile_trip (raw VPIN > vpin_trip while the
-                    percentile is unavailable), 1% book toxicity > ob_toxicity_trip or a 1%
+                    percentile is unavailable), a ±1% book imbalance in either tail of the
+                    symbol's own history (ob_toxicity_1pct > ob_toxicity_trip while that
+                    percentile is unavailable) or a 1%
                     depth-imbalance spike; re-arms only below the re-arm threshold and no
                     trip condition for `cooldown_secs` (hysteresis prevents flapping).
       * confluence: `evaluate_risk_action(snapshot, config.risk)`, i.e. the SDK's risk
@@ -127,7 +129,11 @@ class CircuitBreaker:
         label, level, trip, _ = self._vpin_level(m)
         if level > trip:
             reasons.append(f"{label} {level:.3f} > {trip:.2f}")
-        if m.ob_toxicity_1pct > c.ob_toxicity_trip:
+        obp = m.ob_imbalance_percentile
+        if obp is not None:
+            if obp <= c.ob_imbalance_percentile_low or obp >= c.ob_imbalance_percentile_high:
+                reasons.append(f"ob_imbalance_percentile {obp:.3f} in tail (ob_toxicity_1pct {m.ob_toxicity_1pct:.2f})")
+        elif m.ob_toxicity_1pct > c.ob_toxicity_trip:
             reasons.append(f"ob_toxicity_1pct {m.ob_toxicity_1pct:.2f} > {c.ob_toxicity_trip:.2f}")
         band = m.depth_bands.get(DEPTH_BAND_1PCT)
         if band is not None:

@@ -21,6 +21,9 @@ class BreakerConfig(BaseModel):
     # Raw-VPIN fallback while the backend has not published vpin_percentile yet.
     vpin_trip: float = 0.85
     vpin_rearm: float = 0.75
+    ob_imbalance_percentile_low: float = 0.01
+    ob_imbalance_percentile_high: float = 0.99
+    # Fixed ask/bid ratio fallback while the backend has not published ob_imbalance_percentile yet.
     ob_toxicity_trip: float = 2.0
     imbalance_spike: float = 0.20
     imbalance_ewma_alpha: float = Field(default=0.10, gt=0, le=1)
@@ -52,6 +55,8 @@ def load_config() -> BreakerConfig:
         vpin_percentile_rearm=float(os.getenv("VPIN_PERCENTILE_REARM", "0.80")),
         vpin_trip=float(os.getenv("VPIN_TRIP", "0.85")),
         vpin_rearm=float(os.getenv("VPIN_REARM", "0.75")),
+        ob_imbalance_percentile_low=float(os.getenv("OB_IMBALANCE_PERCENTILE_LOW", "0.01")),
+        ob_imbalance_percentile_high=float(os.getenv("OB_IMBALANCE_PERCENTILE_HIGH", "0.99")),
         ob_toxicity_trip=float(os.getenv("OB_TOXICITY_TRIP", "2.0")),
         imbalance_spike=float(os.getenv("IMBALANCE_SPIKE", "0.20")),
         cooldown_secs=float(os.getenv("COOLDOWN_SECS", "5")),

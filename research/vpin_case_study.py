@@ -1,8 +1,8 @@
 """Reproducible case study for the article: VPIN, taker imbalance and Polymarket repricing
 around the largest 15-minute BTCUSDT drop between 2026-07-28 and 2026-09-26.
 
-Data: Binance public 1m klines (exact taker-buy / taker-sell notional per bar) and
-Polymarket's public CLOB price history. No API keys needed:
+Data: Binance public 1m and 1s klines (exact taker-buy / taker-sell notional per bar) and
+Polymarket's public CLOB price history and taker trades. No API keys needed:
 
     pip install httpx && python research/vpin_case_study.py
 """
@@ -22,6 +22,7 @@ import httpx
 BINANCE_KLINES = "https://data-api.binance.vision/api/v3/klines"
 GAMMA_EVENTS = "https://gamma-api.polymarket.com/events"
 CLOB_HISTORY = "https://clob.polymarket.com/prices-history"
+DATA_TRADES = "https://data-api.polymarket.com/trades"
 
 START = calendar.timegm((2026, 7, 28, 0, 0, 0)) * 1000
 END = calendar.timegm((2026, 9, 26, 0, 0, 0)) * 1000
@@ -99,12 +100,49 @@ def conditional_lift(series: Series, times: List[int], closes: List[float]) -> s
     )
 
 
-def polymarket_history(client: httpx.Client, event_slug: str, start_s: int, end_s: int) -> dict:
-    event = client.get(GAMMA_EVENTS, params={"slug": event_slug}).raise_for_status().json()[0]
+def polymarket_history(client: httpx.Client, event: dict, start_s: int, end_s: int) -> dict:
+    """Up price keyed by the 1m bar that closed most recently before each history point.
+
+    History points are stamped a few seconds after the minute (e.g. 05:07:14), so the point
+    describes the market just after the bar opened at 05:06 closed, not the 05:07 bar.
+    """
     yes_token = json.loads(event["markets"][0]["clobTokenIds"])[0]
     params = {"market": yes_token, "startTs": start_s, "endTs": end_s, "fidelity": 1}
     history = client.get(CLOB_HISTORY, params=params).raise_for_status().json()["history"]
-    return {p["t"] // 60 * 60_000: p["p"] for p in history}
+    return {(p["t"] // 60 - 1) * 60_000: p["p"] for p in history}
+
+
+def up_trades(client: httpx.Client, condition_id: str, since_s: int) -> List[Tuple[int, float]]:
+    """(timestamp s, Up-equivalent price) of every taker trade at or after since_s, oldest first."""
+    out: List[Tuple[int, float]] = []
+    for offset in range(0, 10_000, 500):
+        params = {"market": condition_id, "limit": 500, "offset": offset, "takerOnly": "true"}
+        page = client.get(DATA_TRADES, params=params).raise_for_status().json()
+        out += [(t["timestamp"], t["price"] if t["outcomeIndex"] == 0 else 1 - t["price"]) for t in page]
+        if not page or page[-1]["timestamp"] < since_s:
+            break
+    return sorted(x for x in out if x[0] >= since_s)
+
+
+def exact_timing(client: httpx.Client, event: dict, window_start_s: int, bottom_ms: int) -> None:
+    """When Binance crossed the window's opening price, and how fast Polymarket's trades followed."""
+    meta = event.get("eventMetadata") or {}
+    secs = client.get(BINANCE_KLINES, params={
+        "symbol": "BTCUSDT", "interval": "1s", "startTime": window_start_s * 1000, "limit": 1000,
+    }).raise_for_status().json()
+    strike = float(meta.get("priceToBeat") or secs[0][1])
+    above = [b for b in secs if b[0] < bottom_ms and float(b[4]) >= strike]
+    if not above:
+        return
+    cross = next(b[0] // 1000 for b in secs if b[0] > above[-1][0] and float(b[4]) < strike)
+    print(f"\nExact timing (strike {strike:,.2f}, the market's own opening price):")
+    print(f"  Binance 1s close first below the strike: {utc(cross * 1000, '%H:%M:%S')} UTC")
+    trades = up_trades(client, event["markets"][0]["conditionId"], cross - 30)
+    for lo in range(cross - 20, cross + 70, 10):
+        px = [p for t, p in trades if lo <= t < lo + 10]
+        if px:
+            print(f"  {utc(lo * 1000, '%H:%M:%S')} +10s: Polymarket Up traded {min(px):.2f}-{max(px):.2f} "
+                  f"({len(px)} taker trades)")
 
 
 def main() -> None:
@@ -131,13 +169,14 @@ def main() -> None:
 
         # Polymarket's 15m "BTC Up or Down" market whose window contains the bottom of the move.
         window_start = times[i] // 900_000 * 900
-        pm = polymarket_history(client, f"btc-updown-15m-{window_start}", window_start - 900, window_start + 1200)
+        event = client.get(GAMMA_EVENTS, params={"slug": f"btc-updown-15m-{window_start}"}).raise_for_status().json()[0]
+        pm = polymarket_history(client, event, window_start - 900, window_start + 1200)
         vol15 = [sum(float(b[7]) for b in bars[k - 15:k]) for k in range(s - 300, s + 1, 15)]
         med = statistics.median(vol15)
         mad = statistics.median(abs(x - med) for x in vol15)
 
         print(f"\n{'UTC':<6}{'close':>9}{'notional':>10}{'taker_buy':>10}{'vpin_fast':>10}{'pctl':>6}"
-              f"{'vpin_slow':>10}{'PM Up':>7}")
+              f"{'vpin_slow':>10}{'PM Up*':>7}")
         for k in range(s, i + 3):
             b = bars[k]
             vf, cf = value_at(fast, b[0])
@@ -146,7 +185,9 @@ def main() -> None:
             print(f"{utc(b[0], '%H:%M'):<6}{float(b[4]):>9,.0f}{float(b[7]) / 1e6:>9.1f}M{float(b[10]) / float(b[7]):>10.2f}"
                   f"{vf:>10.3f}{cf:>6.0%}{vs:>10.3f}{up if up is not None else float('nan'):>7.3f}")
         move_usd = sum(float(b[7]) for b in bars[s:i + 1])
+        print("* first Polymarket history point after the bar closed (stamped a few seconds past the minute)")
         print(f"15m notional ${move_usd / 1e6:.0f}M, robust volume z-score {(move_usd - med) * 0.6745 / mad:.1f}")
+        exact_timing(client, event, window_start, times[i])
 
         print("\nConditional backtest (non-overlapping 15m windows after a 7-day warm-up):")
         print(f"  slow: {conditional_lift(slow, times, closes)}")

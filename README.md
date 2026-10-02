@@ -10,13 +10,15 @@ A kill switch for market makers, built on FollowSM's **Enterprise WebSocket stre
 It evaluates every Binance microstructure tick in memory. When order flow turns toxic, it fires **cancellation callbacks** and **signed webhooks** for your resting maker quotes, before informed traders pick them off.
 
 ```
-12:01:42 WARNING | BTCUSDT NONE -> HALT_MAKER_QUOTES [toxicity] ob_toxicity_1pct 6.69 > 2.00 | vpin=0.186 pctl=- ob_tox_1pct=6.69 eval=32.1us feed_age=561ms
-12:01:42 WARNING | KILL SWITCH: cancelling every resting maker quote on BTCUSDT
-12:01:42 WARNING | ETHUSDT NONE -> HALT_MAKER_QUOTES [toxicity] ob_toxicity_1pct 4.99 > 2.00 | vpin=0.350 pctl=- ob_tox_1pct=4.99 eval=11.9us feed_age=561ms
-11:30:47 WARNING | SOLUSDT WIDEN_SPREAD_2X -> HALT_MAKER_QUOTES [toxicity] ob_toxicity_1pct 2.90 > 2.00; 1% depth imbalance spike 0.26 vs ewma 0.48
-Breaker evaluation latency: n=240 p50=7.1us p99=27.3us max=38.0us
+09:14:49 INFO    | Guarding BTCUSDT, ETHUSDT, SOLUSDT
+09:19:19 INFO    | Breaker evaluation latency: n=3699 p50=21.4us p99=48.7us max=118.7us
 ```
-<sub>Real output from the live Enterprise streams (`pctl=-`: `vpin_percentile` was still warming up).</sub>
+<sub>Real output from the live Enterprise streams, 2 October 2026: five quiet minutes, no trips. When one fires, it looks like this (illustrative values):</sub>
+
+```
+WARNING | SOLUSDT NONE -> HALT_MAKER_QUOTES [toxicity] ob_imbalance_percentile 0.996 in tail (ob_toxicity_1pct 3.10) | vpin=0.212 pctl=0.41 ob_tox_1pct=3.10 eval=24.0us feed_age=180ms
+WARNING | KILL SWITCH: cancelling every resting maker quote on SOLUSDT
+```
 
 ---
 
@@ -45,10 +47,11 @@ The effective action for each symbol is the **more severe** of two legs.
 
 | Leg | Source | Logic |
 |---|---|---|
-| **Toxicity** | `stream_toxicity()` → `SymbolToxicityMetrics` | `HALT_MAKER_QUOTES` if **any** of these holds: `vpin_percentile > VPIN_PERCENTILE_TRIP` (0.90); `ob_toxicity_1pct > OB_TOXICITY_TRIP` (2.0); the 1% depth `imbalance_ratio` deviates from its EWMA by more than `IMBALANCE_SPIKE` (0.20) |
+| **Toxicity** | `stream_toxicity()` → `SymbolToxicityMetrics` | `HALT_MAKER_QUOTES` if **any** of these holds: `vpin_percentile > VPIN_PERCENTILE_TRIP` (0.90); the ±1% book imbalance in either tail of the symbol's own history (`ob_imbalance_percentile <= 0.01` or `>= 0.99`; `ob_toxicity_1pct > OB_TOXICITY_TRIP` (2.0) while that percentile warms up); the 1% depth `imbalance_ratio` deviates from its EWMA by more than `IMBALANCE_SPIKE` (0.20) |
 | **Confluence** | `stream_confluence()` → `ConfluenceSnapshot` | **Local fallback evaluation** with `evaluate_risk_action(snapshot, RiskConfig(...))`. Your thresholds replace the backend's `recommended_action` |
 
 - **Percentile, not raw VPIN.** Raw VPIN depends on each pair's trade-size distribution, so it can't share one threshold across symbols. FollowSM publishes `vpin_percentile`, which ranks VPIN against the symbol's own recent history, and the breaker trips on that. While a symbol is warming up and no percentile exists yet, it falls back to raw `VPIN_TRIP` / `VPIN_REARM`.
+- **Percentile, not a fixed book ratio.** Some books are structurally lopsided: on the live full-book stream, SOLUSDT's `ob_toxicity_1pct` sits above 2 most of the time. A fixed ratio would keep such a pair halted all day, so the book leg trips on `ob_imbalance_percentile` instead (requires `followsm-sdk` 1.6.0 or later).
 - **Hysteresis.** A tripped symbol re-arms only when `vpin_percentile < VPIN_PERCENTILE_REARM` (0.80) **and** no trip condition has occurred for `COOLDOWN_SECS`. This prevents flapping between halt and resume around the threshold.
 - **Fail closed.** When a stream disconnects, every symbol it guards is halted immediately. The breaker then reconnects with exponential backoff, and fresh frames re-arm the symbols.
 - **De-duplication.** `/ws/v1/toxicity` pushes each symbol as soon as it is recomputed (several times a second when the market is active, at least once a second). Frames whose timestamp hasn't advanced are skipped.
@@ -128,21 +131,21 @@ asyncio.run(main())
 
 ### Webhook payload
 
-Every transition is POSTed as JSON:
+Every transition is POSTed as JSON (illustrative values):
 
 ```json
 {
-  "symbol": "BTCUSDT",
+  "symbol": "SOLUSDT",
   "action": "HALT_MAKER_QUOTES",
   "previous_action": "NONE",
   "source": "toxicity",
-  "reasons": ["ob_toxicity_1pct 6.69 > 2.00"],
-  "vpin": 0.186,
-  "vpin_percentile": null,
-  "ob_toxicity_1pct": 6.69,
-  "imbalance_1pct": 0.13,
-  "feed_age_ms": 561.0,
-  "eval_latency_us": 32.1,
+  "reasons": ["ob_imbalance_percentile 0.996 in tail (ob_toxicity_1pct 3.10)"],
+  "vpin": 0.212,
+  "vpin_percentile": 0.41,
+  "ob_toxicity_1pct": 3.10,
+  "imbalance_1pct": 0.24,
+  "feed_age_ms": 180.0,
+  "eval_latency_us": 24.0,
   "emitted_at": 1790416902.960
 }
 ```
@@ -157,7 +160,8 @@ Every transition is POSTed as JSON:
 | `SYMBOLS` | `BTCUSDT,ETHUSDT,SOLUSDT` | Symbols to guard. Empty = everything on the stream |
 | `VPIN_PERCENTILE_TRIP` / `VPIN_PERCENTILE_REARM` | `0.90` / `0.80` | Trip and re-arm thresholds on `vpin_percentile` (the hysteresis band) |
 | `VPIN_TRIP` / `VPIN_REARM` | `0.85` / `0.75` | Raw-VPIN fallback while `vpin_percentile` is unavailable (set high: raw levels vary a lot between pairs) |
-| `OB_TOXICITY_TRIP` | `2.0` | Ask/bid notional ratio within ±1% of mid |
+| `OB_IMBALANCE_PERCENTILE_LOW` / `OB_IMBALANCE_PERCENTILE_HIGH` | `0.01` / `0.99` | Trip when the ±1% book imbalance ranks in either tail of the symbol's own history |
+| `OB_TOXICITY_TRIP` | `2.0` | Fallback while that percentile warms up: ask/bid notional ratio within ±1% of mid |
 | `IMBALANCE_SPIKE` | `0.20` | Maximum deviation of the 1% `imbalance_ratio` from its EWMA |
 | `COOLDOWN_SECS` | `5` | Minimum clean time before re-arming |
 | `VPIN_PERCENTILE_WIDEN_THRESHOLD` / `VPIN_PERCENTILE_HALT_THRESHOLD` / `VPIN_WIDEN_THRESHOLD` / `VPIN_HALT_THRESHOLD` / `MIN_SEMANTIC_CONFIDENCE` | `0.90` / `0.95` / `0.80` / `0.90` / `0.65` | Local fallback `RiskConfig` for confluence frames |
@@ -178,7 +182,7 @@ Every transition is POSTed as JSON:
 
 ## Related
 
-- Research: [`research/vpin_case_study.py`](research/vpin_case_study.py) reproduces the 2026-08-22 BTC sweep case study (VPIN, taker imbalance, Polymarket repricing) from public data, with no keys needed
+- Research: [`research/vpin_case_study.py`](research/vpin_case_study.py) reproduces the 2026-08-22 BTC sweep case study (VPIN, taker imbalance, Polymarket repricing to the second from its trades) from public data, with no keys needed
 - Python SDK: [`pip install followsm-sdk`](https://pypi.org/project/followsm-sdk/)
 - TypeScript SDK: [`npm install @followsm/sdk`](https://www.npmjs.com/package/@followsm/sdk)
 - REST polling bot for Polymarket: [`polymarket-arbitrage-starter-kit`](https://github.com/Follow-SM/polymarket-arbitrage-starter-kit)

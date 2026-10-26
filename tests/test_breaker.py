@@ -19,7 +19,7 @@ from circuit_breaker.streams import EnterpriseRequiredError, guard_stream
 _ts = iter(range(1, 10_000))
 
 
-def tick(vpin=0.30, ob_tox=1.0, imbalance=0.50, symbol="BTCUSDT", vpin_percentile=None, ob_pctl=None):
+def tick(vpin=0.30, ob_tox=1.0, imbalance=0.50, symbol="BTCUSDT", vpin_percentile=None, ob_pctl=None, sweep=None):
     return SymbolToxicityMetrics(
         symbol=symbol,
         timestamp=float(next(_ts)),
@@ -28,6 +28,9 @@ def tick(vpin=0.30, ob_tox=1.0, imbalance=0.50, symbol="BTCUSDT", vpin_percentil
         vpin_percentile=vpin_percentile,
         ob_toxicity_1pct=ob_tox,
         ob_imbalance_percentile=ob_pctl,
+        sweep_active=sweep is not None,
+        last_sweep_side=sweep[0] if sweep else 0,
+        last_sweep_notional_usd=sweep[1] if sweep else 0.0,
         ob_imbalance_l1=0.5,
         depth_bands={"1.0%": {"bid_notional": 1.0, "ask_notional": 1.0, "imbalance_ratio": imbalance}},
         volume_z_score=0.0,
@@ -129,6 +132,24 @@ def test_book_leg_uses_imbalance_percentile_tails_when_published():
         assert warming.action("BTCUSDT") == "HALT_MAKER_QUOTES"
         await breaker.drain()
         await warming.drain()
+
+    asyncio.run(scenario())
+
+
+def test_taker_sweep_trips_and_rearms_after_cooldown():
+    async def scenario():
+        breaker, clock, received = make_breaker()
+        breaker.on_toxicity(tick(sweep=(-1, 184_250.0)))
+        assert breaker.action("BTCUSDT") == "HALT_MAKER_QUOTES"
+        clock.now = 5.0
+        breaker.on_toxicity(tick())
+        assert breaker.action("BTCUSDT") == "NONE"
+        await breaker.drain()
+        assert received[0].reasons == ["sell sweep $184,250"]
+
+        off, _, _ = make_breaker(sweep_trip=False)
+        off.on_toxicity(tick(sweep=(1, 150_000.0)))
+        assert off.action("BTCUSDT") == "NONE"
 
     asyncio.run(scenario())
 

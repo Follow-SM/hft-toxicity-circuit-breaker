@@ -28,8 +28,17 @@ Market makers lose money through **adverse selection**: their quotes get filled 
 
 - **VPIN** (Volume-Synchronized Probability of Informed Trading) rises. Volume becomes one-sided within each fixed-volume bucket.
 - **The top of the book thins out.** Resting liquidity within ±1% of mid turns lopsided, which shows up as `ob_toxicity_1pct` and the 1% depth-band `imbalance_ratio`.
+- **Someone sweeps the book.** A single large taker order walks several levels at once.
 
-This breaker watches both at tick level and pulls your quotes within microseconds of a frame arriving.
+This breaker watches all three at tick level and pulls your quotes within microseconds of a frame arriving.
+
+### What two weeks of live data showed
+
+We recorded FollowSM's streams next to Binance and every Polymarket crypto Up/Down book for 343 hours ([tick-microstructure-research](https://github.com/Follow-SM/tick-microstructure-research)):
+
+- **Sweeps are the sharpest warning.** After a ≥ $100k Binance taker sweep, Polymarket's Up/Down books repriced with a median lag of 44–227 ms, against 2.5–3.7 s at random times. Halting for a few seconds after each sweep was the one trigger that clearly beat randomly timed halts, on BTC; on ETH and SOL it did not.
+- **The book and VPIN legs are regime signals.** A lopsided ±1% book came before larger moves in *both* directions, and VPIN fired rarely. Keep them for widening and for slow regimes; don't expect them to time a single sweep.
+- **The race is in milliseconds.** Every sweep trip logs how long after the sweep printed the breaker reacted. If that plus your cancel path is longer than the venue's reaction, your quote is already stale.
 
 ## How it works
 
@@ -47,7 +56,7 @@ The effective action for each symbol is the **more severe** of two legs.
 
 | Leg | Source | Logic |
 |---|---|---|
-| **Toxicity** | `stream_toxicity()` → `SymbolToxicityMetrics` | `HALT_MAKER_QUOTES` if **any** of these holds: `vpin_percentile > VPIN_PERCENTILE_TRIP` (0.90); the ±1% book imbalance in either tail of the symbol's own history (`ob_imbalance_percentile <= 0.01` or `>= 0.99`; `ob_toxicity_1pct > OB_TOXICITY_TRIP` (2.0) while that percentile warms up); the 1% depth `imbalance_ratio` deviates from its EWMA by more than `IMBALANCE_SPIKE` (0.20) |
+| **Toxicity** | `stream_toxicity()` → `SymbolToxicityMetrics` | `HALT_MAKER_QUOTES` if **any** of these holds: `vpin_percentile > VPIN_PERCENTILE_TRIP` (0.90); the ±1% book imbalance in either tail of the symbol's own history (`ob_imbalance_percentile <= 0.01` or `>= 0.99`; `ob_toxicity_1pct > OB_TOXICITY_TRIP` (2.0) while that percentile warms up); a Binance taker sweep (one matching event ≥ $100k) in the last few seconds (`sweep_active`, `SWEEP_TRIP`); the 1% depth `imbalance_ratio` deviates from its EWMA by more than `IMBALANCE_SPIKE` (0.20) |
 | **Confluence** | `stream_confluence()` → `ConfluenceSnapshot` | **Local fallback evaluation** with `evaluate_risk_action(snapshot, RiskConfig(...))`. Your thresholds replace the backend's `recommended_action` |
 
 - **Percentile, not raw VPIN.** Raw VPIN depends on each pair's trade-size distribution, so it can't share one threshold across symbols. FollowSM publishes `vpin_percentile`, which ranks VPIN against the symbol's own recent history, and the breaker trips on that. While a symbol is warming up and no percentile exists yet, it falls back to raw `VPIN_TRIP` / `VPIN_REARM`.
@@ -162,6 +171,7 @@ Every transition is POSTed as JSON (illustrative values):
 | `VPIN_TRIP` / `VPIN_REARM` | `0.85` / `0.75` | Raw-VPIN fallback while `vpin_percentile` is unavailable (set high: raw levels vary a lot between pairs) |
 | `OB_IMBALANCE_PERCENTILE_LOW` / `OB_IMBALANCE_PERCENTILE_HIGH` | `0.01` / `0.99` | Trip when the ±1% book imbalance ranks in either tail of the symbol's own history |
 | `OB_TOXICITY_TRIP` | `2.0` | Fallback while that percentile warms up: ask/bid notional ratio within ±1% of mid |
+| `SWEEP_TRIP` | `true` | Halt while FollowSM flags a Binance taker sweep from the last few seconds (`followsm-sdk` 1.7.0+) |
 | `IMBALANCE_SPIKE` | `0.20` | Maximum deviation of the 1% `imbalance_ratio` from its EWMA |
 | `COOLDOWN_SECS` | `5` | Minimum clean time before re-arming |
 | `VPIN_PERCENTILE_WIDEN_THRESHOLD` / `VPIN_PERCENTILE_HALT_THRESHOLD` / `VPIN_WIDEN_THRESHOLD` / `VPIN_HALT_THRESHOLD` / `MIN_SEMANTIC_CONFIDENCE` | `0.90` / `0.95` / `0.80` / `0.90` / `0.65` | Local fallback `RiskConfig` for confluence frames |

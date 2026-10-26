@@ -89,7 +89,8 @@ class CircuitBreaker:
       * toxicity  : HALT while vpin_percentile > vpin_percentile_trip (raw VPIN > vpin_trip while the
                     percentile is unavailable), a ±1% book imbalance in either tail of the
                     symbol's own history (ob_toxicity_1pct > ob_toxicity_trip while that
-                    percentile is unavailable) or a 1%
+                    percentile is unavailable), a Binance taker sweep in the last few
+                    seconds (`sweep_trip`) or a 1%
                     depth-imbalance spike; re-arms only below the re-arm threshold and no
                     trip condition for `cooldown_secs` (hysteresis prevents flapping).
       * confluence: `evaluate_risk_action(snapshot, config.risk)`, i.e. the SDK's risk
@@ -135,6 +136,10 @@ class CircuitBreaker:
                 reasons.append(f"ob_imbalance_percentile {obp:.3f} in tail (ob_toxicity_1pct {m.ob_toxicity_1pct:.2f})")
         elif m.ob_toxicity_1pct > c.ob_toxicity_trip:
             reasons.append(f"ob_toxicity_1pct {m.ob_toxicity_1pct:.2f} > {c.ob_toxicity_trip:.2f}")
+        if c.sweep_trip and m.sweep_active:
+            side = "buy" if (m.last_sweep_side or 0) > 0 else "sell"
+            age = f", {(time.time() - m.last_sweep_ts) * 1000:.0f} ms after it printed" if m.last_sweep_ts else ""
+            reasons.append(f"{side} sweep ${m.last_sweep_notional_usd or 0:,.0f}{age}")
         band = m.depth_bands.get(DEPTH_BAND_1PCT)
         if band is not None:
             x, ewma = band.imbalance_ratio, state.imbalance_ewma

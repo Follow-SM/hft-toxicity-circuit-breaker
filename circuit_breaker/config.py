@@ -25,6 +25,8 @@ class BreakerConfig(BaseModel):
     ob_imbalance_percentile_high: float = 0.99
     # Fixed ask/bid ratio fallback while the backend has not published ob_imbalance_percentile yet.
     ob_toxicity_trip: float = 2.0
+    # Halt while FollowSM flags a Binance taker sweep (one matching event >= $100k) from the last few seconds.
+    sweep_trip: bool = True
     imbalance_spike: float = 0.20
     imbalance_ewma_alpha: float = Field(default=0.10, gt=0, le=1)
     cooldown_secs: float = Field(default=5.0, ge=0)
@@ -58,6 +60,7 @@ def load_config() -> BreakerConfig:
         ob_imbalance_percentile_low=float(os.getenv("OB_IMBALANCE_PERCENTILE_LOW", "0.01")),
         ob_imbalance_percentile_high=float(os.getenv("OB_IMBALANCE_PERCENTILE_HIGH", "0.99")),
         ob_toxicity_trip=float(os.getenv("OB_TOXICITY_TRIP", "2.0")),
+        sweep_trip=os.getenv("SWEEP_TRIP", "true").lower() in ("1", "true", "yes"),
         imbalance_spike=float(os.getenv("IMBALANCE_SPIKE", "0.20")),
         cooldown_secs=float(os.getenv("COOLDOWN_SECS", "5")),
         webhook_url=_env("WEBHOOK_URL"),

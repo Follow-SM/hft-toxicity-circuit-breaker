@@ -192,6 +192,7 @@ Every transition is POSTed as JSON (illustrative values):
 
 ## Related
 
+- Pre-trade gate over REST: [`examples/risk_gate.py`](examples/risk_gate.py) checks the same triggers before each order instead of per tick (no streams needed; tests in `examples/test_risk_gate.py`, run `cd examples && pytest -q`)
 - Research: [`research/vpin_case_study.py`](research/vpin_case_study.py) reproduces the 2026-08-22 BTC sweep case study (VPIN, taker imbalance, Polymarket repricing to the second from its trades) from public data, with no keys needed
 - Python SDK: [`pip install followsm-sdk`](https://pypi.org/project/followsm-sdk/)
 - TypeScript SDK: [`npm install @followsm/sdk`](https://www.npmjs.com/package/@followsm/sdk)
